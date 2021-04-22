@@ -1,7 +1,7 @@
 from socket import *
 import os
 import sys
-import struct
+from struct import pack, unpack_from
 import time
 import select
 import binascii
@@ -44,36 +44,43 @@ def receiveOnePing(mySocket, ID, timeout, destAddr):
     timeLeft = timeout
     while 1:
         startedSelect = time.time()
+
         # Waiting for mySocket to be ready for reading
+        # i.e waiting for the socket to recive a response
         whatReady = select.select([mySocket], [], [], timeLeft)
         howLongInSelect = (time.time() - startedSelect)
 
         if whatReady[0] == []: # Timeout
-            return "Request timed out."
-
+            return "Request timed out: Socket took too long"
         timeReceived = time.time()
         recPacket, addr = mySocket.recvfrom(1024)
-
-        # TODO: parse response -> check if right packet
-        #FillInStart
-        # Checking for losses
-        message = recPacket.decode()
-        check = checksum(message)
-        if sys.platform == 'darwin':
-            check = htons(check) & 0xffff
-        else:
-            check = htons(check)
-        print("Received something")
         
-        if recPacket:
-            response = f"Response received from {destAddr}"
-            response += f""
-            return (timeReceived - startedSelect) - howLongInSelect
+        # TODO: parse response -> check if right packet
+        # * Check ID and/or sequencenum
+        #FillInStart
+
+        payload_size = len(recPacket) - 20
+        pkt_ip = inet_ntoa(recPacket[12:16])
+        print(f"Packet Received from {pkt_ip}")
+        
+        # Unpacking from byte 20 to circumvent IP header
+        # data = unpack_from("bbHHhd", recPacket, 20)
+        # pkt_cs = data[2]
+        # pkt_id = data[3]
+        # icmp_seq = data[4]
+
+        # Total time in milliseconds
+        timewait = ((timeReceived - startedSelect) - howLongInSelect) * 1000
+        # IPv4 header is 20 bytes, so subtracting that
+        response = f"{payload_size} bytes from {pkt_ip}\t time={timewait:1.4f} ms\t"
+        
+
         #FillInEnd
         timeLeft = timeLeft - howLongInSelect
 
         if timeLeft <= 0:
-            return "Request timed out."
+            response = "Request timed out: timeout"
+        return response    
 
 
 def sendOnePing(mySocket, destAddr, ID):
@@ -83,30 +90,28 @@ def sendOnePing(mySocket, destAddr, ID):
     @param ID: int16 -> Used in the header to identify the packet
     Constructs a packet and sends it to the correct address
     """
-
-    # Header is type (8), code (8), checksum (16), id (16), sequence (16)
+    # Header is type (8b), code (8b), checksum (16b), id (16b), sequence (16b)
+    # for a total size of 64b
     # Make a dummy header with a 0 checksum
     myChecksum = 0
 
     # ICMP header structure: Type, Code, checksum, ID, Sequence
-    header = struct.pack("bbHHh", ICMP_ECHO_REQUEST, 0, myChecksum, ID, 1)
-    data = struct.pack("d", time.time())
+    header = pack("bbHHh", ICMP_ECHO_REQUEST, 0, myChecksum, ID, 1)
+    data = pack("d", time.time())
 
     # Calculate the checksum on the data and the dummy header.
     myChecksum = checksum(str(header + data))
 
     # Get the right checksum, and put in the header
     # * htons converts 16-bit unsigned integer from host to network byte order
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin': # Apple
         myChecksum = htons(myChecksum) & 0xffff
     else:
         myChecksum = htons(myChecksum)
-
-    header = struct.pack("bbHHh", ICMP_ECHO_REQUEST, 0, myChecksum, ID, 1)
+    header = pack("bbHHh", ICMP_ECHO_REQUEST, 0, myChecksum, ID, 1)
     packet = header + data
 
     # * Sending constructed packet to address
-    print(f"Sending ping to {destAddr}...")
     mySocket.sendto(packet, (destAddr, 1))
 
 
@@ -117,7 +122,7 @@ def ping(host, timeout=1):
     
     """
     dest = gethostbyname(host)
-
+    print(f"Pinging 16 bytes to {dest}...")
     icmp = getprotobyname("icmp")
     myID = os.getpid() & 0xFFFF # Return the current process id
     # Send ping requests to a server separated by approximately a second
@@ -126,13 +131,13 @@ def ping(host, timeout=1):
     while 1:
         mySocket = socket(AF_INET, SOCK_RAW, icmp)
         sendOnePing(mySocket, dest, myID)
-        delay = receiveOnePing(mySocket, myID, timeout, dest)
-        print(delay)
+        print(receiveOnePing(mySocket, myID, timeout, dest))
         mySocket.close()
         time.sleep(1)
 
-    return delay
-
 if __name__ == "__main__":
-    ping("ftp.microsoft.com")
+    if len(sys.argv) == 2:
+        ping(sys.argv[1])
+    else:
+        ping(gethostname())
     pass
